@@ -649,6 +649,197 @@ npx playwright show-report
 
 **Reflexão para a turma:** *"O defeito foi descoberto apenas quando escrevemos testes que verificavam o cálculo com valores variados. Se tivéssemos testado apenas com notas iguais (ex: 7, 7, 7), o defeito teria sido detectado? Por quê?"*
 
+### 6.6 Problemas Comuns e Como Resolvê-los
+
+Durante a escrita e execução dos testes, é natural encontrar erros que não são defeitos da aplicação, mas sim problemas na forma como o teste foi escrito. Esta seção lista os problemas mais frequentes e suas soluções.
+
+#### Problema 1: "strict mode violation" — Múltiplos elementos encontrados
+
+**Sintoma:** O teste falha com uma mensagem como:
+
+```
+Error: locator.click: Error: strict mode violation:
+  getByText('Nota 1') resolved to 2 elements
+```
+
+**Causa:** O locator encontrou mais de um elemento correspondente na página. No site QS Acadêmico, isso pode acontecer porque:
+- O texto "Nota 1" aparece tanto no `<label>` do formulário quanto no `<th>` da tabela de resultados.
+- Após cadastrar alunos, o nome de um aluno pode coincidir com texto em outro lugar da página.
+
+**Soluções:**
+
+```typescript
+// ❌ PROBLEMA — "Nota 1" existe no formulário E no cabeçalho da tabela
+await page.getByText('Nota 1').fill('8');
+
+// ✅ SOLUÇÃO 1 — Usar getByLabel (associa ao <label for="nota1">)
+await page.getByLabel('Nota 1').fill('8');
+
+// ✅ SOLUÇÃO 2 — Restringir a busca a uma seção específica
+await page.locator('#secao-cadastro').getByText('Nota 1');
+
+// ✅ SOLUÇÃO 3 — Usar .first() ou .nth() quando a ordem é conhecida
+await page.getByText('Nota 1').first();
+
+// ✅ SOLUÇÃO 4 — Tornar a busca mais específica com exact: true
+await page.getByText('Aprovado', { exact: true }); // Não casa com "Aprovados"
+```
+
+> **💡 Regra geral:** Sempre que o Playwright reportar "resolved to N elements", restrinja o escopo do locator em vez de simplesmente usar `.first()`. Restringir o escopo produz testes mais robustos.
+
+#### Problema 2: Texto parcial casa com elementos indesejados
+
+**Sintoma:** `getByText('Aprovado')` encontra tanto o badge "Aprovado" na tabela quanto o card "Aprovados" nas estatísticas.
+
+**Causa:** Por padrão, `getByText` faz correspondência parcial — "Aprovado" é substring de "Aprovados".
+
+**Soluções:**
+
+```typescript
+// ❌ PROBLEMA — casa com "Aprovado" e "Aprovados"
+await expect(page.getByText('Aprovado')).toBeVisible();
+
+// ✅ SOLUÇÃO 1 — Correspondência exata
+await expect(page.getByText('Aprovado', { exact: true })).toBeVisible();
+
+// ✅ SOLUÇÃO 2 — Restringir ao contexto da tabela
+const linha = page.locator('#tabela-alunos tbody tr').first();
+await expect(linha.getByText('Aprovado')).toBeVisible();
+
+// ✅ SOLUÇÃO 3 — Usar o badge específico (mais preciso)
+await expect(linha.locator('.badge')).toHaveText('Aprovado');
+```
+
+#### Problema 3: Teste falha por timing — elemento ainda não apareceu
+
+**Sintoma:** O teste falha com `Timeout exceeded` ao verificar um elemento que deveria estar presente.
+
+**Causa:** A ação anterior (ex: clique em "Cadastrar") ainda não atualizou o DOM quando a asserção é executada.
+
+**Soluções:**
+
+```typescript
+// ❌ NÃO RECOMENDADO — espera fixa, lento e frágil
+await page.waitForTimeout(2000);
+await expect(page.getByText('João')).toBeVisible();
+
+// ✅ CORRETO — expect com auto-retry (tenta repetidamente até 5s)
+await expect(page.getByText('João')).toBeVisible();
+
+// ✅ Se precisar de mais tempo, aumente o timeout da asserção específica
+await expect(page.getByText('João')).toBeVisible({ timeout: 10000 });
+```
+
+> **💡 Dica:** O Playwright já faz auto-retry nas asserções `expect()`. Na maioria dos casos, basta usar `await expect(...)` sem nenhum `waitFor` ou `waitForTimeout`. Se o teste falha por timeout, investigue se o elemento realmente é renderizado (abra o Trace Viewer).
+
+#### Problema 4: `toHaveText` falha por espaços ou quebras de linha
+
+**Sintoma:** `await expect(celula).toHaveText('8.00')` falha mesmo quando visualmente o valor está correto.
+
+**Causa:** O texto do elemento pode conter espaços extras, `\n` ou `\t` invisíveis.
+
+**Soluções:**
+
+```typescript
+// ✅ Usar toContainText para correspondência parcial
+await expect(celula).toContainText('8.00');
+
+// ✅ Usar regex para ignorar espaços ao redor
+await expect(celula).toHaveText(/\s*8\.00\s*/);
+
+// ✅ Inspecionar o texto real para depuração
+const texto = await celula.textContent();
+console.log('Texto real:', JSON.stringify(texto));
+```
+
+#### Problema 5: Testes interferem entre si
+
+**Sintoma:** Os testes passam quando executados individualmente (`npx playwright test --grep "nome do teste"`), mas falham quando executados juntos.
+
+**Causa:** O site mantém dados em memória (array `alunos`). Se um teste cadastra alunos e o próximo assume que a tabela está vazia, haverá conflito, pois o Playwright abre uma nova página para cada teste — **mas cuidado**: se por algum motivo os testes compartilharem estado (ex: mesma aba), dados do teste anterior podem persistir.
+
+**Soluções:**
+
+```typescript
+// ✅ RECOMENDADO — usar beforeEach para garantir estado limpo
+test.beforeEach(async ({ page }) => {
+  // Cada teste recebe uma nova instância de page (nova aba)
+  // Navegar para a página garante estado inicial limpo
+  await page.goto('/');
+});
+
+// ✅ Se necessário, recarregar a página explicitamente
+await page.reload();
+```
+
+> **💡 No QS Acadêmico**, como os dados ficam apenas em memória JavaScript (sem banco de dados), cada `page.goto('/')` recarrega a página com o array `alunos` vazio — garantindo isolamento natural.
+
+#### Problema 6: Campo numérico não aceita o valor via `fill()`
+
+**Sintoma:** `page.getByLabel('Nota 1').fill('8')` não preenche o campo, ou o valor fica incorreto.
+
+**Causa:** Em alguns navegadores, campos `<input type="number">` podem ter comportamento diferente com `fill()`.
+
+**Soluções:**
+
+```typescript
+// ✅ SOLUÇÃO 1 — limpar o campo antes de preencher
+await page.getByLabel('Nota 1').clear();
+await page.getByLabel('Nota 1').fill('8');
+
+// ✅ SOLUÇÃO 2 — usar pressSequentially para simular digitação real
+await page.getByLabel('Nota 1').pressSequentially('8');
+
+// ✅ SOLUÇÃO 3 — clicar no campo antes de preencher
+await page.getByLabel('Nota 1').click();
+await page.getByLabel('Nota 1').fill('8');
+```
+
+#### Problema 7: `npx playwright test` não encontra os testes
+
+**Sintoma:** O comando executa mas reporta "0 tests found" ou "No tests found".
+
+**Causas e soluções:**
+
+| Causa provável | Solução |
+|----------------|---------|
+| Arquivo não termina com `.spec.ts` | Renomear para `nome.spec.ts` |
+| Arquivo está fora da pasta `tests/` | Mover para a pasta `tests/` ou ajustar `testDir` no config |
+| Está executando fora do diretório do projeto | Executar `cd testes-playwright` antes |
+| Faltou a função `test()` no arquivo | Verificar se o arquivo importa e usa `test` do `@playwright/test` |
+
+```bash
+# Verificar quais testes o Playwright encontra
+npx playwright test --list
+```
+
+#### Problema 8: Navegadores não instalados
+
+**Sintoma:** Erro `browserType.launch: Executable doesn't exist` ao executar os testes.
+
+**Solução:**
+
+```bash
+# Instalar todos os navegadores configurados
+npx playwright install
+
+# Ou instalar apenas o Chromium (mais rápido)
+npx playwright install chromium
+```
+
+#### Resumo Rápido
+
+| Problema | Mensagem típica | Solução principal |
+|----------|----------------|-------------------|
+| Múltiplos elementos | `strict mode violation` | Restringir escopo com `locator()` ou `{ exact: true }` |
+| Texto parcial | Asserção casa com elemento errado | Usar `{ exact: true }` ou restringir ao container |
+| Timeout | `Timeout exceeded` | Confiar no auto-retry; verificar no Trace Viewer |
+| Espaços invisíveis | `toHaveText` falha | Usar `toContainText` ou regex |
+| Testes interferem | Passam isolados, falham juntos | Garantir `page.goto('/')` no `beforeEach` |
+| Campo numérico | Valor não preenchido | Usar `clear()` + `fill()` ou `pressSequentially()` |
+| 0 testes encontrados | "No tests found" | Verificar nome do arquivo e `testDir` |
+| Navegador ausente | `Executable doesn't exist` | Executar `npx playwright install` |
+
 ---
 
 ## 7. Entregáveis
