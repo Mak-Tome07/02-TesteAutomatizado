@@ -41,8 +41,12 @@ function normalizarClasse(texto) {
  * @param {number} nota3 - Terceira nota (0 a 10)
  * @returns {number} Média aritmética das notas
  */
-function calcularMedia(nota1, nota2, nota3) {
+/*function calcularMedia(nota1, nota2, nota3) {
     return (nota1 + nota2) / 2;
+}*/
+
+function calcularMedia(nota1, nota2, nota3) {
+    return (nota1 + nota2 + nota3) / 3;
 }
 
 /**
