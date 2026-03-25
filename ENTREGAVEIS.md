@@ -131,8 +131,8 @@
 | **Função corrigida** | _(function calcularMedia)_|
 | **Código original (com defeito)** | _(function calcularMedia(nota1, nota2, nota3) {return (nota1 + nota2) / 2;})_ |
 | **Código corrigido** | _(function calcularMedia(nota1, nota2, nota3) {return (nota1 + nota2 + nota3) / 3; //CORRIGIDO})_ |
-| **Hash do commit** | |
-| **Mensagem do commit** | |
+| **Hash do commit** | ![alt text](image-4.png) |
+| **Mensagem do commit** | ![alt text](image-5.png) |
 
 **Validação pós-correção:**
 
